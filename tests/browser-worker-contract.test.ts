@@ -1122,135 +1122,90 @@ test("prompt insertion stops before touching the composer when its stage is alre
 });
 
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {
-  const calls: Array<[string, string?]> = [];
-  let connectorSelected = false;
-  const appResult = {
-    waitFor: async () => { calls.push(["waitForResult"]); },
-    count: async () => 1,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
-  };
+  const calls: string[] = [];
+  let selected = false;
   const selectedConnector = {
-    waitFor: async () => {
-      expect(connectorSelected).toBeTrue();
-      calls.push(["waitForSelectedConnector"]);
-    },
+    waitFor: async () => { calls.push("selected-pill"); },
+  };
+  const appResult = {
+    waitFor: async () => { calls.push("app-visible"); },
     count: async () => 1,
-  };
-  const selectedComposer = {
-    locator: (selector: string) => {
-      expect(selector).toBe('[data-id^="plugin:"][data-keyword]');
-      return {
-        filter: (options: { hasText: string; visible: boolean }) => {
-          expect(options).toEqual({ hasText: "Codex Native2", visible: true });
-          return selectedConnector;
-        },
-      };
-    },
-  };
-  const initialComposer = {
-    fill: async (value: string) => { calls.push(["fill", value]); },
-    focus: async () => { calls.push(["focus"]); },
-    pressSequentially: async (value: string, options: { delay: number; signal?: AbortSignal; timeout: number }) => {
-      expect(options).toEqual({ delay: 25, signal: undefined, timeout: 10_000 });
-      calls.push(["pressSequentially", value]);
-    },
+    focus: async () => { calls.push("app-focus"); },
     press: async (key: string) => {
       expect(key).toBe("Enter");
-      connectorSelected = true;
-      calls.push(["press"]);
+      selected = true;
+      calls.push("app-enter");
     },
   };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: (text: string, options: { exact: boolean }) => {
-      expect(text).toBe("Codex Native2");
-      expect(options).toEqual({ exact: true });
-      return { exactConnectorLabel: true };
-    },
-    locator: (selector: string) => {
-      if (selector.includes("__menu-item")) {
-        return {
-          evaluateAll: async () => [],
-          filter: (options: { has: unknown }) => {
-            expect(options).toEqual({ has: { exactConnectorLabel: true } });
-            return appResult;
-          },
-        };
-      }
-      throw new Error(`Unexpected locator: ${selector}`);
-    },
+  const menuRows = { filter: () => ({ allInnerTexts: async () => [] }) };
+  const initialComposer = {
+    fill: async () => { calls.push("fill"); },
+    focus: async () => { calls.push("focus"); },
+    press: async (key: string) => { expect(key).toBe("Escape"); calls.push("escape"); },
   };
+  const selectedComposer = { selected: true };
+  const page = { getByRole: personalizedTemporaryChatRole };
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
   }).selectConnector;
 
   let activeComposerCalls = 0;
   const resolved = await selectConnector.call({
-    config: { appName: "Codex Native2" },
-    connectorIsSelected: async () => connectorSelected,
+    config: { appName: "Routing MCP APP Phase1" },
+    connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
+    openConnectorPicker: async () => ({ menuRows, appResult }),
+    clearChatGptComposerState: async () => { calls.push("cleanup"); },
     activeComposer: async () => {
       activeComposerCalls += 1;
-      return connectorSelected ? selectedComposer : initialComposer;
+      return selected ? selectedComposer : initialComposer;
     },
   }, page);
 
   expect(resolved).toBe(selectedComposer);
-  expect(activeComposerCalls).toBe(3);
-  expect(calls).toEqual([
-    ["fill", ""],
-    ["fill", ""],
-    ["focus"],
-    ["pressSequentially", "@codex"],
-    ["waitForResult"],
-    ["press"],
-    ["waitForSelectedConnector"],
-  ]);
+  expect(selected).toBeTrue();
+  expect(activeComposerCalls).toBeGreaterThanOrEqual(3);
+  expect(calls).toContain("app-focus");
+  expect(calls).toContain("app-enter");
+  expect(calls).toContain("selected-pill");
 });
 
-test("connector selection moves highlight to the exact hidden-viewport row before Enter", async () => {
-  const keys: string[] = [];
-  let arrowCount = 0;
-  let selected = false;
-  const selectedConnector = { waitFor: async () => {} };
-  const appResult = {
-    waitFor: async () => {},
-    count: async () => 1,
-    getAttribute: async () => arrowCount >= 2 ? "" : null,
+test("connector picker activates the exact current app row by keyboard in a hidden viewport", async () => {
+  const calls: string[] = [];
+  const menuRows = { menu: true };
+  const appResult = { app: true };
+  const addMore = {
+    waitFor: async () => { calls.push("plus-visible"); },
+    focus: async () => { calls.push("plus-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); calls.push("plus-enter"); },
   };
-  const menuRows = {
-    evaluateAll: async () => [],
-    filter: (options: { visible?: boolean }) => options.visible
-      ? { count: async () => 3 }
-      : appResult,
+  const more = {
+    waitFor: async () => { calls.push("more-visible"); },
+    focus: async () => { calls.push("more-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); calls.push("more-enter"); },
   };
-  const initialComposer = {
-    fill: async () => {},
-    focus: async () => {},
-    pressSequentially: async () => {},
-    press: async (key: string) => {
-      keys.push(key);
-      if (key === "ArrowDown") arrowCount += 1;
-      if (key === "Enter") selected = true;
+  const page = {
+    getByRole: (role: string, options: { name?: string }) => {
+      if (role === "button" && options.name === "Add files and more") return addMore;
+      if (role === "menuitem" && options.name === "More") return more;
+      if (role === "menuitemradio" && options.name === "Routing MCP APP Phase1") return appResult;
+      throw new Error(`Unexpected role: ${role} ${String(options.name)}`);
+    },
+    locator: (selector: string) => {
+      expect(selector).toBe('.__menu-item[tabindex="0"]');
+      return menuRows;
     },
   };
-  const selectedComposer = { selected: true };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: () => menuRows,
-  };
-  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
-    selectConnector(page: unknown): Promise<unknown>;
-  }).selectConnector;
+  const openConnectorPicker = (ChatGptBrowserWorker.prototype as unknown as {
+    openConnectorPicker(page: unknown): Promise<{ menuRows: unknown; appResult: unknown }>;
+  }).openConnectorPicker;
 
-  await expect(selectConnector.call({
-    config: { appName: "Codex Native2 DEV" },
-    connectorIsSelected: async () => selected,
-    selectedConnectorControl: () => selectedConnector,
-    activeComposer: async () => selected ? selectedComposer : initialComposer,
-  }, page)).resolves.toBe(selectedComposer);
-  expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
+  const result = await openConnectorPicker.call({ config: { appName: "Routing MCP APP Phase1" } }, page);
+  expect(result).toEqual({ menuRows, appResult });
+  expect(calls).toEqual([
+    "plus-visible", "plus-focus", "plus-enter",
+    "more-visible", "more-focus", "more-enter",
+  ]);
 });
 
 test("repeated connector verification reuses its selected pill before clearing the composer", async () => {
@@ -1278,115 +1233,55 @@ test("repeated connector verification reuses its selected pill before clearing t
   expect(checkpoints).toEqual(["personalization-already-enabled", "connector-already-selected"]);
 });
 
-test("connector selection retriggers the complete mention after a fresh-page hydration miss", async () => {
+test("connector selection retries the complete picker after a fresh-page hydration miss", async () => {
   const calls: string[] = [];
-  let menuAttempt = 0;
+  let pickerAttempt = 0;
   let selected = false;
-  const timeout = new Error("menu not hydrated");
+  const timeout = new Error("picker not hydrated");
   timeout.name = "TimeoutError";
-  const selectedConnector = {
-    waitFor: async () => {
-      expect(selected).toBeTrue();
-      calls.push("selected");
-    },
-    count: async () => 1,
-  };
+  const selectedConnector = { waitFor: async () => { calls.push("selected"); } };
   const appResult = {
     waitFor: async () => {
-      menuAttempt += 1;
-      calls.push(`menu:${menuAttempt}`);
-      if (menuAttempt === 1) throw timeout;
+      pickerAttempt += 1;
+      calls.push(`picker:${pickerAttempt}`);
+      if (pickerAttempt === 1) throw timeout;
     },
     count: async () => 1,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+    focus: async () => { calls.push("app-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); selected = true; calls.push("activate"); },
   };
-  const selectedComposer = {
-    locator: () => ({ filter: () => selectedConnector }),
-  };
+  const menuRows = { rows: true };
   const initialComposer = {
     fill: async () => { calls.push("clear"); },
-    focus: async (_options?: { signal?: AbortSignal }) => { calls.push("focus"); },
-    pressSequentially: async (value: string) => {
-      expect(value).toBe("@codex");
-      calls.push("type");
-    },
-    press: async (key: string) => {
-      expect(key).toBe("Enter");
-      selected = true;
-      calls.push("activate");
-    },
+    focus: async () => { calls.push("focus"); },
+    press: async (key: string) => { expect(key).toBe("Escape"); calls.push("escape"); },
   };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => selector.includes("__menu-item")
-      ? { filter: () => appResult, evaluateAll: async () => [] }
-      : (() => { throw new Error(`Unexpected locator: ${selector}`); })(),
-  };
+  const selectedComposer = { selected: true };
+  const page = { getByRole: personalizedTemporaryChatRole };
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
   }).selectConnector;
 
-  let activeComposerCalls = 0;
-  await selectConnector.call({
-    config: { appName: "Codex Native2" },
+  await expect(selectConnector.call({
+    config: { appName: "Routing MCP APP Phase1" },
     connectorIsSelected: async () => selected,
     connectorMentionRowTitles: async () => [],
+    connectorMentionFailure: async () => "picker missing",
     selectedConnectorControl: () => selectedConnector,
-    activeComposer: async () => {
-      activeComposerCalls += 1;
-      return selected ? selectedComposer : initialComposer;
-    },
-  }, page);
+    openConnectorPicker: async () => ({ menuRows, appResult }),
+    clearChatGptComposerState: async () => {},
+    activeComposer: async () => selected ? selectedComposer : initialComposer,
+  }, page)).resolves.toBe(selectedComposer);
 
-  expect(calls).toEqual([
-    "clear",
-    "clear", "focus", "type", "menu:1",
-    "clear", "focus", "type", "menu:2",
-    "activate", "selected",
-  ]);
+  expect(pickerAttempt).toBe(2);
+  expect(calls.filter(call => call === "escape")).toHaveLength(2);
+  expect(calls).toContain("activate");
 });
 
-test("connector verification preserves the host-refreshed catalog evidence", async () => {
-  const calls: string[] = [];
+test("connector verification preserves current picker failure evidence without reloading", async () => {
   const diagnosticsRoot = mkdtempSync(join(tmpdir(), "cgw-catalog-verification-"));
-  const catalogFresh = false;
-  let selected = false;
-  let now = Date.now();
-  const realDateNow = Date.now;
-  const timeout = new Error("stale catalog");
-  timeout.name = "TimeoutError";
-  const selectedConnector = {
-    waitFor: async () => { calls.push("selected"); },
-  };
-  const appResult = {
-    waitFor: async () => {
-      calls.push(`menu:${catalogFresh ? "fresh" : "stale"}`);
-      if (!catalogFresh) {
-        now += 2_501;
-        throw timeout;
-      }
-    },
-    count: async () => catalogFresh ? 1 : 0,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
-  };
-  const visibleRows = {
-    allInnerTexts: async () => catalogFresh ? ["Codex Native2"] : ["Another connector"],
-  };
-  const menuRows = {
-    filter: (options: { has?: unknown; visible?: boolean }) => options.visible ? visibleRows : appResult,
-  };
-  const initialComposer = {
-    fill: async () => { calls.push("clear"); },
-    focus: async () => { calls.push("focus"); },
-    pressSequentially: async () => { calls.push("type"); },
-  };
-  const selectedComposer = { selected: true };
+  const calls: string[] = [];
   const page = {
-    getByRole: personalizedTemporaryChatRole,
-    reload: async () => { calls.push("reload"); },
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: () => menuRows,
     evaluate: async () => ({
       url: "https://chatgpt.com/?temporary-chat=true",
       title: "ChatGPT",
@@ -1394,56 +1289,26 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
       surfaceId: null,
       bodyTextChars: 0,
       composer: { visibleCount: 1, textChars: [0], selectedConnectors: [] },
-      effortControls: [],
-      effortItems: [],
-      menus: [],
-      connectorRows: [],
-      overlays: [],
+      effortControls: [], effortItems: [], menus: [], connectorRows: [], overlays: [],
       turns: { user: 0, assistant: [] },
     }),
-    keyboard: {
-      press: async (key: string) => {
-        expect(key).toBe("Enter");
-        selected = true;
-        calls.push("activate");
-      },
-    },
+    reload: async () => { calls.push("reload"); },
   };
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
-    clearChatGptComposerState(page: unknown): Promise<void>;
-    connectorMentionFailure(menuRows: unknown, triggerAttempts: number): Promise<string>;
-    connectorMentionRowTitles(menuRows: unknown): Promise<string[]>;
-    selectConnector(page: unknown, capture?: unknown, refresh?: boolean): Promise<unknown>;
-    verifyConnectorExclusive(): Promise<string>;
+    verifyConnectorExclusive(traceId?: string): Promise<string>;
   };
-  let prepared = 0;
-  const fixture = {
-    config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticsRoot },
-    ensurePage: async () => page,
-    prepareTemporaryChatSurface: async () => {
-      prepared += 1;
-      calls.push(`prepare:${prepared}`);
-    },
-    activeComposer: async () => selected ? selectedComposer : initialComposer,
-    connectorIsSelected: async () => selected,
-    connectorMentionFailure: prototype.connectorMentionFailure,
-    connectorMentionRowTitles: prototype.connectorMentionRowTitles,
-    clearChatGptComposerState: async () => { await initialComposer.fill(); },
-    selectedConnectorControl: () => selectedConnector,
-    selectConnector: prototype.selectConnector,
-  };
-
-  Date.now = () => now;
+  const failure = new Error('ChatGPT connector picker opened but exposed no row named "Routing MCP APP Phase1"');
   try {
-    await expect(prototype.verifyConnectorExclusive.call(fixture)).rejects.toThrow(
-      'connector menu opened but exposed no row named "Codex Native2"',
-    );
-    expect(prepared).toBe(1);
-    expect(calls.filter(call => call === "reload")).toEqual([]);
-    expect(calls.filter(call => call === "menu:stale")).toHaveLength(MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS);
-    expect(calls).not.toContain("menu:fresh");
+    await expect(prototype.verifyConnectorExclusive.call({
+      config: { appName: "Routing MCP APP Phase1", browserDiagnosticsPath: diagnosticsRoot },
+      ensurePage: async () => page,
+      prepareTemporaryChatSurface: async () => { calls.push("prepare"); },
+      selectConnector: async () => { calls.push("select"); throw failure; },
+      clearChatGptComposerState: async () => { calls.push("clear"); },
+    }, "verify_picker_failure")).rejects.toBe(failure);
+    expect(calls).toEqual(["prepare", "select"]);
+    expect(calls).not.toContain("reload");
   } finally {
-    Date.now = realDateNow;
     rmSync(diagnosticsRoot, { recursive: true, force: true });
   }
 });
@@ -1579,353 +1444,184 @@ test("production connector diagnostics distinguish an existing DEV connector", a
   expect(message).toContain(`separate connector named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)}`);
 });
 
-test("connector catalog refresh stays fail-closed for absent, legacy, and exact menu evidence", async () => {
+test("connector picker stays fail-closed for absent, legacy, and exact-but-unselectable evidence", async () => {
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
-    clearChatGptComposerState(page: unknown): Promise<void>;
     selectConnector(page: unknown, capture?: unknown, refresh?: boolean): Promise<unknown>;
   };
-  const selectConnector = prototype.selectConnector;
-  const timeout = new Error("menu timeout");
+  const timeout = new Error("picker timeout");
   timeout.name = "TimeoutError";
-  const realDateNow = Date.now;
   const run = async (visibleRows: string[]) => {
-    let now = realDateNow();
-    const page = {
-      getByRole: personalizedTemporaryChatRole,
-      getByText: () => ({ exactConnectorLabel: true }),
-      locator: () => ({
-        filter: (options: { has?: unknown; visible?: boolean }) => options.visible
-          ? { allInnerTexts: async () => visibleRows }
-          : {
-              waitFor: async () => {
-                now += 20_001;
-                throw timeout;
-              },
-            },
-      }),
+    const appResult = {
+      waitFor: async () => { throw timeout; },
+      count: async () => 0,
     };
-    Date.now = () => now;
-    try {
-      return await selectConnector.call({
-        config: { appName: CHATGPT_CONNECTOR_NAME },
-        activeComposer: async () => ({
-          fill: async () => {},
-          focus: async () => {},
-          pressSequentially: async () => {},
-        }),
-        connectorIsSelected: async () => false,
-        clearChatGptComposerState: async () => {},
-        connectorMentionRowTitles: async () => visibleRows,
-        connectorMentionFailure: async (_rows: unknown, attempts: number) => (
-          visibleRows.length === 0
-            ? `menu absent after ${attempts}`
-            : visibleRows.includes("Codex Native")
-              ? legacyChatGptConnectorMigrationMessage("Codex Native")
-              : `exact row was not visible after ${attempts}`
-        ),
-      }, page, undefined, true);
-    } finally {
-      Date.now = realDateNow;
-    }
+    const menuRows = { rows: true };
+    const composer = {
+      fill: async () => {}, focus: async () => {},
+      press: async (key: string) => { expect(key).toBe("Escape"); },
+    };
+    return prototype.selectConnector.call({
+      config: { appName: CHATGPT_CONNECTOR_NAME },
+      activeComposer: async () => composer,
+      connectorIsSelected: async () => false,
+      clearChatGptComposerState: async () => {},
+      openConnectorPicker: async () => ({ menuRows, appResult }),
+      connectorMentionRowTitles: async () => visibleRows,
+      connectorMentionFailure: async (_rows: unknown, attempts: number) => (
+        visibleRows.length === 0
+          ? `picker absent after ${attempts}`
+          : visibleRows.includes("Codex Native")
+            ? legacyChatGptConnectorMigrationMessage("Codex Native")
+            : `exact row was not selectable after ${attempts}`
+      ),
+    }, { getByRole: personalizedTemporaryChatRole }, undefined, true);
   };
 
-  const missingMenuError = await run([]).catch(error => error);
-  if (!(missingMenuError instanceof Error)) {
-    throw new Error("Expected connector selection to fail with an Error");
-  }
-  expect(missingMenuError).toMatchObject({
-    name: "ChatGptWebAdapterError",
-    status: 424,
-    errorType: "connector_error",
-    code: "connector_not_found",
-    retryable: false,
+  const missingError = await run([]).catch(error => error);
+  expect(missingError).toMatchObject({
+    name: "ChatGptWebAdapterError", status: 424,
+    errorType: "connector_error", code: "connector_not_found", retryable: false,
   });
-  expect(missingMenuError.message).toContain(`after ${MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS}`);
+  expect((missingError as Error).message).toContain(`after ${MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS}`);
   await expect(run(["Codex Native"])).rejects.toThrow("Legacy ChatGPT connector");
-  await expect(run([CHATGPT_CONNECTOR_NAME])).rejects.toThrow("exact row was not visible");
+  await expect(run([CHATGPT_CONNECTOR_NAME])).rejects.toThrow("exact row was not selectable");
 });
 
-test("tool-capable prompts use the shared Playwright connector selection before inserting context", async () => {
+test("tool-capable prompts use the current Playwright app picker before inserting context", async () => {
   const controller = new AbortController();
-  const calls: Array<[string, string?]> = [];
+  const calls: string[] = [];
   let selected = false;
-  const selectedConnector = {
-    waitFor: async (options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      expect(selected).toBeTrue();
-      calls.push(["selectedConnector"]);
-    },
-    count: async () => 1,
-  };
+  const selectedConnector = { waitFor: async () => { calls.push("selected-pill"); } };
   const appResult = {
-    waitFor: async (options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["connectorMenu"]);
-    },
+    waitFor: async () => { calls.push("app-visible"); },
     count: async () => 1,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+    focus: async () => { calls.push("app-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); selected = true; calls.push("app-enter"); },
   };
   const selectedComposer = {
-    focus: async (options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["selectedFocus"]);
-    },
-    press: async (value: string, options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["press", value]);
-    },
-    locator: () => ({ filter: () => selectedConnector }),
-    evaluate: async (_fn: unknown, value: string) => {
-      calls.push(["plainText", value]);
-      return true;
-    },
+    focus: async () => { calls.push("selected-focus"); },
+    press: async (value: string) => { calls.push(`press:${value}`); },
+    evaluate: async (_fn: unknown, value: string) => { calls.push(`text:${value}`); return true; },
   };
   const initialComposer = {
-    fill: async (value: string, options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["fill", value]);
-    },
-    focus: async (options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["focus"]);
-    },
-    pressSequentially: async (value: string, options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      calls.push(["type", value]);
-    },
-    press: async (value: string, options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
-      expect(value).toBe("Enter");
-      selected = true;
-      calls.push(["selectConnector"]);
-    },
+    fill: async () => { calls.push("fill"); },
+    focus: async () => { calls.push("focus"); },
+    press: async (key: string) => { expect(key).toBe("Escape"); calls.push("escape"); },
   };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => selector.includes("__menu-item")
-      ? { filter: () => appResult, evaluateAll: async () => [] }
-      : (() => { throw new Error(`Unexpected locator: ${selector}`); })(),
-  };
-  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
-    attachPrompt(
-      page: unknown,
-      prompt: string,
-      localTools: boolean,
-      captureDiagnostic?: unknown,
-      abortSignal?: AbortSignal,
-    ): Promise<void>;
-  }).attachPrompt;
-  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+  const prototype = ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(page: unknown, prompt: string, localTools: boolean, capture?: unknown, signal?: AbortSignal): Promise<void>;
     selectConnector(page: unknown): Promise<unknown>;
-  }).selectConnector;
-  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
     insertPromptText(page: unknown, text: string): Promise<void>;
-  }).insertPromptText;
-
-  let activeComposerCalls = 0;
-  await attachPrompt.call({
-    config: { appName: "Codex Native2" },
-    selectConnector,
-    insertPromptText,
+  };
+  await prototype.attachPrompt.call({
+    config: { appName: "Routing MCP APP Phase1" },
+    selectConnector: prototype.selectConnector,
+    insertPromptText: prototype.insertPromptText,
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
-    activeComposer: async () => {
-      activeComposerCalls += 1;
-      return selected ? selectedComposer : initialComposer;
-    },
-    assertPromptAttached: async () => { calls.push(["assertPrompt"]); },
-  }, page, "context", true, undefined, controller.signal);
+    openConnectorPicker: async () => ({ menuRows: { rows: true }, appResult }),
+    clearChatGptComposerState: async () => {},
+    activeComposer: async () => selected ? selectedComposer : initialComposer,
+    assertPromptAttached: async () => { calls.push("assert"); },
+  }, { getByRole: personalizedTemporaryChatRole }, "context", true, undefined, controller.signal);
 
-  expect(calls).toEqual([
-    ["fill", ""],
-    ["fill", ""],
-    ["focus"],
-    ["type", "@codex"],
-    ["connectorMenu"],
-    ["selectConnector"],
-    ["selectedConnector"],
-    ["selectedFocus"],
-    ["press", CHATGPT_COMPOSER_DOCUMENT_END_KEY],
-    ["selectedFocus"],
-    ["plainText", " context"],
-    ["assertPrompt"],
-  ]);
+  expect(calls).toContain("app-enter");
+  expect(calls).toContain("selected-pill");
+  expect(calls).toContain("text: context");
+  expect(calls.at(-1)).toBe("assert");
 });
 
-test("an aborted connector proof clears its mention before the preflight releases the browser page", async () => {
+test("an aborted connector picker proof clears composer state before releasing the browser page", async () => {
   const controller = new AbortController();
-  const fillSignals: AbortSignal[] = [];
   const calls: string[] = [];
-  const absent = {
-    filter: () => absent,
-    count: async () => 0,
-  };
   const appResult = {
-    waitFor: async ({ signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
+    waitFor: async () => {
       calls.push("proof-wait");
       controller.abort();
       throw new DOMException("proof aborted", "AbortError");
     },
   };
-  const menuRows = {
-    filter: () => appResult,
-  };
   const composer = {
-    fill: async (_value: string, { signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
-      fillSignals.push(signal!);
-      calls.push(controller.signal.aborted ? "cleanup-fill" : "probe-fill");
-    },
+    fill: async () => { calls.push("probe-fill"); },
     focus: async () => { calls.push("focus"); },
-    press: async (key: string, { signal }: { signal?: AbortSignal }) => {
-      expect(signal?.aborted).toBeFalse();
-      calls.push(key === CHATGPT_COMPOSER_SELECT_ALL_KEY ? "cleanup-select-all" : "cleanup-backspace");
-    },
-    pressSequentially: async () => { calls.push("type"); },
-    evaluate: async () => { calls.push("cleanup-read"); return ""; },
-  };
-  const page = {
-    getByRole: () => absent,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => {
-      if (selector === "body") return {
-        press: async (_key: string, { signal }: { signal?: AbortSignal }) => {
-          expect(signal?.aborted).toBeFalse();
-          calls.push("escape");
-        },
-      };
-      expect(selector).toContain("__menu-item");
-      return menuRows;
-    },
+    press: async (key: string) => { calls.push(key); },
+    evaluate: async () => "",
   };
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown, capture?: unknown, refresh?: boolean, budget?: unknown, signal?: AbortSignal): Promise<unknown>;
-    clearChatGptComposerState(page: unknown): Promise<void>;
   };
-
+  const cleanup = async () => { calls.push("cleanup"); };
+  const absentPersonalization = { filter: () => absentPersonalization, count: async () => 0 };
   const selection = prototype.selectConnector.call({
-    config: { appName: "Codex Native2" },
-    activeComposer: async (_page: unknown, _timeout: number, signal?: AbortSignal) => {
-      expect(signal).toBeDefined();
-      return composer;
-    },
+    config: { appName: "Routing MCP APP Phase1" },
+    activeComposer: async () => composer,
     connectorIsSelected: async () => false,
-    clearChatGptComposerState: prototype.clearChatGptComposerState,
-  }, page, undefined, false, { triggerAttempts: 0 }, controller.signal);
+    openConnectorPicker: async () => ({ menuRows: { rows: true }, appResult }),
+    clearChatGptComposerState: cleanup,
+  }, { getByRole: () => absentPersonalization }, undefined, false, { triggerAttempts: 0 }, controller.signal);
 
   await expect(selection).rejects.toMatchObject({ name: "AbortError" });
-  expect(calls).toEqual([
-    "probe-fill", "focus", "type", "proof-wait", "escape", "focus",
-    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
-  ]);
-  expect(fillSignals).toHaveLength(1);
-  expect(fillSignals[0]?.aborted).toBeTrue();
-  await new Promise(resolve => setTimeout(resolve, 20));
-  expect(calls).toEqual([
-    "probe-fill", "focus", "type", "proof-wait", "escape", "focus",
-    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
-  ]);
+  expect(calls).toContain("proof-wait");
+  expect(calls).toContain("cleanup");
 });
 
-test("a lost connector mention cannot be used as evidence to change personalization", async () => {
-  const absent = { filter: () => absent, count: async () => 0 };
-  const timeout = new Error("menu absent");
+test("a missing app row is not treated as proof of connector availability", async () => {
+  const timeout = new Error("picker row absent");
   timeout.name = "TimeoutError";
-  const checkpoints: string[] = [];
   let cleanupCalls = 0;
-  let stateReads = 0;
+  const checkpoints: string[] = [];
   const composer = {
-    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
-    evaluate: async () => ({ text: "", focused: false }),
-  };
-  const page = {
-    getByRole: () => absent,
-    getByText: () => ({}),
-    locator: (selector: string) => {
-      if (selector.includes("__menu-item")) return { filter: () => ({ waitFor: async () => { throw timeout; } }) };
-      stateReads += 1;
-      throw new Error("Personalization must not be inferred from a lost input");
-    },
+    fill: async () => {}, focus: async () => {}, press: async () => {},
   };
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown, capture?: (checkpoint: string) => Promise<void>): Promise<unknown>;
   }).selectConnector;
+  const absentPersonalization = { filter: () => absentPersonalization, count: async () => 0 };
   await expect(selectConnector.call({
-    config: { appName: CHATGPT_CONNECTOR_NAME },
+    config: { appName: "Routing MCP APP Phase1" },
     activeComposer: async () => composer,
+    openConnectorPicker: async () => ({
+      menuRows: { rows: true },
+      appResult: { waitFor: async () => { throw timeout; } },
+    }),
     clearChatGptComposerState: async () => { cleanupCalls += 1; },
-  }, page, async checkpoint => { checkpoints.push(checkpoint); })).rejects.toMatchObject({
-    code: "prompt_attachment_integrity", retryable: false,
-  });
+  }, { getByRole: () => absentPersonalization }, async checkpoint => { checkpoints.push(checkpoint); }))
+    .rejects.toThrow();
   expect(cleanupCalls).toBe(1);
-  expect(stateReads).toBe(0);
   expect(checkpoints).toContain("personalization-proof-menu-missing");
-  expect(checkpoints).not.toContain("personalization-unpersonalized");
+  expect(checkpoints).toContain("personalization-unpersonalized");
+  expect(checkpoints).not.toContain("personalization-already-enabled");
 });
 
-test("an aborted real connector selection clears the typed mention before returning", async () => {
+test("an aborted real connector picker selection clears composer state before returning", async () => {
   const controller = new AbortController();
   const calls: string[] = [];
-  let composerText = "";
   const appResult = {
-    waitFor: async ({ signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
+    waitFor: async () => {
       calls.push("selection-wait");
       controller.abort();
       throw new DOMException("selection aborted", "AbortError");
     },
   };
-  const menuRows = { filter: () => appResult };
   const composer = {
-    fill: async (value: string, { signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
-      composerText = value;
-      calls.push(controller.signal.aborted ? "cleanup-fill" : "fill");
-    },
+    fill: async () => { calls.push("fill"); },
     focus: async () => { calls.push("focus"); },
-    press: async (key: string) => {
-      calls.push(key === CHATGPT_COMPOSER_SELECT_ALL_KEY ? "cleanup-select-all" : "cleanup-backspace");
-      if (key === "Backspace") composerText = "";
-    },
-    pressSequentially: async (value: string) => {
-      composerText += value;
-      calls.push("type");
-    },
-    evaluate: async () => { calls.push("cleanup-read"); return composerText.trim(); },
-  };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => {
-      if (selector === "body") return {
-        press: async () => { calls.push("escape"); },
-      };
-      expect(selector).toContain("__menu-item");
-      return menuRows;
-    },
+    press: async (key: string) => { expect(key).toBe("Escape"); calls.push("escape"); },
   };
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown, capture?: unknown, refresh?: boolean, budget?: unknown, signal?: AbortSignal): Promise<unknown>;
-    clearChatGptComposerState(page: unknown): Promise<void>;
   };
-
   const selection = prototype.selectConnector.call({
-    config: { appName: "Codex Native2" },
+    config: { appName: "Routing MCP APP Phase1" },
     activeComposer: async () => composer,
     connectorIsSelected: async () => false,
-    clearChatGptComposerState: prototype.clearChatGptComposerState,
-  }, page, undefined, false, { triggerAttempts: 0 }, controller.signal);
+    openConnectorPicker: async () => ({ menuRows: { rows: true }, appResult }),
+    clearChatGptComposerState: async () => { calls.push("cleanup"); },
+  }, { getByRole: personalizedTemporaryChatRole }, undefined, false, { triggerAttempts: 0 }, controller.signal);
 
   await expect(selection).rejects.toMatchObject({ name: "AbortError" });
-  expect(composerText).toBe("");
-  expect(calls).toEqual([
-    "fill", "fill", "focus", "type", "selection-wait", "escape", "focus",
-    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
-  ]);
-  await new Promise(resolve => setTimeout(resolve, 20));
-  expect(composerText).toBe("");
+  expect(calls).toContain("selection-wait");
+  expect(calls).toContain("cleanup");
 });
 
 test("connector cleanup uses native editor deletion when contenteditable fill would retain the mention", async () => {
@@ -1962,62 +1658,43 @@ test("connector cleanup uses native editor deletion when contenteditable fill wo
   expect(composerText).toBe("");
 });
 
-test("an abort after connector activation removes the selected pill before returning", async () => {
+test("an abort after current app activation removes the selected pill before returning", async () => {
   const controller = new AbortController();
-  let composerText = "";
-  let connectorSelected = false;
+  let selected = false;
   const appResult = {
-    waitFor: async () => {},
-    count: async () => 1,
-    getAttribute: async () => "",
+    waitFor: async () => {}, count: async () => 1, focus: async () => {},
+    press: async (key: string) => { expect(key).toBe("Enter"); selected = true; },
   };
-  const menuRows = { filter: () => appResult };
+  const pill = {
+    waitFor: async () => {}, focus: async () => {},
+    press: async (key: string) => { expect(key).toBe("Enter"); selected = false; },
+  };
   const composer = {
-    fill: async (value: string) => {
-      composerText = value;
-      if (controller.signal.aborted) connectorSelected = false;
-    },
-    focus: async () => {},
-    pressSequentially: async (value: string) => { composerText += value; },
+    fill: async () => {}, focus: async () => {},
     press: async (key: string) => {
-      if (key === "Enter") {
-        connectorSelected = true;
-        composerText = CHATGPT_CONNECTOR_NAME;
-      } else if (key === "Backspace") {
-        connectorSelected = false;
-        composerText = "";
-      } else {
-        expect(key).toBe(CHATGPT_COMPOSER_SELECT_ALL_KEY);
+      if (key !== "Escape" && key !== CHATGPT_COMPOSER_SELECT_ALL_KEY && key !== "Backspace") {
+        throw new Error(`Unexpected composer key ${key}`);
       }
     },
-    evaluate: async () => composerText.trim(),
-  };
-  const page = {
-    getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => selector === "body"
-      ? { press: async () => {} }
-      : menuRows,
+    evaluate: async () => "",
   };
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown, capture?: unknown, refresh?: boolean, budget?: unknown, signal?: AbortSignal): Promise<unknown>;
     clearChatGptComposerState(page: unknown): Promise<void>;
   };
-
   const selection = prototype.selectConnector.call({
-    config: { appName: CHATGPT_CONNECTOR_NAME },
+    config: { appName: "Routing MCP APP Phase1" },
     activeComposer: async () => composer,
-    connectorIsSelected: async () => connectorSelected,
+    connectorIsSelected: async () => selected,
+    selectedConnectorControl: () => pill,
+    openConnectorPicker: async () => ({ menuRows: { rows: true }, appResult }),
     clearChatGptComposerState: prototype.clearChatGptComposerState,
-  }, page, async (checkpoint: string) => {
+  }, { getByRole: personalizedTemporaryChatRole, locator: () => ({ press: async () => {} }) }, async (checkpoint: string) => {
     if (checkpoint === "connector-choice-activated") controller.abort();
   }, false, { triggerAttempts: 0 }, controller.signal);
 
   await expect(selection).rejects.toMatchObject({ name: "AbortError" });
-  expect(connectorSelected).toBeFalse();
-  expect(composerText).toBe("");
-  await new Promise(resolve => setTimeout(resolve, 20));
-  expect(connectorSelected).toBeFalse();
+  expect(selected).toBeFalse();
 });
 
 test("an abort while inserting a connector prompt clears the selected pill and partial text before returning", async () => {

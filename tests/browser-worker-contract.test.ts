@@ -1180,6 +1180,7 @@ test("connector picker activates the exact current app row by keyboard in a hidd
     press: async (key: string) => { expect(key).toBe("Enter"); calls.push("plus-enter"); },
   };
   const more = {
+    filter: () => more,
     waitFor: async () => { calls.push("more-visible"); },
     focus: async () => { calls.push("more-focus"); },
     press: async (key: string) => { expect(key).toBe("Enter"); calls.push("more-enter"); },
@@ -1206,6 +1207,52 @@ test("connector picker activates the exact current app row by keyboard in a hidd
     "plus-visible", "plus-focus", "plus-enter",
     "more-visible", "more-focus", "more-enter",
   ]);
+});
+
+test("connector picker retries one transient missing More menu without retrying the browser turn", async () => {
+  const calls: string[] = [];
+  let moreWaits = 0;
+  const timeout = new Error("menu did not open");
+  timeout.name = "TimeoutError";
+  const addMore = {
+    waitFor: async () => { calls.push("plus-visible"); },
+    focus: async () => { calls.push("plus-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); calls.push("plus-enter"); },
+  };
+  const more = {
+    filter: () => more,
+    waitFor: async () => {
+      moreWaits += 1;
+      calls.push(`more-wait:${moreWaits}`);
+      if (moreWaits === 1) throw timeout;
+    },
+    focus: async () => { calls.push("more-focus"); },
+    press: async (key: string) => { expect(key).toBe("Enter"); calls.push("more-enter"); },
+  };
+  const appResult = { app: true };
+  const menuRows = { rows: true };
+  const page = {
+    getByRole: (role: string, options: { name?: string }) => {
+      if (role === "button" && options.name === "Add files and more") return addMore;
+      if (role === "menuitem" && options.name === "More") return more;
+      if (role === "menuitemradio" && options.name === "Routing MCP APP Phase1") return appResult;
+      throw new Error(`Unexpected role ${role} ${String(options.name)}`);
+    },
+    locator: (selector: string) => selector === "body"
+      ? { press: async (key: string) => { expect(key).toBe("Escape"); calls.push("escape"); } }
+      : menuRows,
+  };
+  const openConnectorPicker = (ChatGptBrowserWorker.prototype as unknown as {
+    openConnectorPicker(page: unknown): Promise<{ menuRows: unknown; appResult: unknown }>;
+  }).openConnectorPicker;
+
+  const result = await openConnectorPicker.call({ config: { appName: "Routing MCP APP Phase1" } }, page);
+  expect(result).toEqual({ menuRows, appResult });
+  expect(moreWaits).toBe(2);
+  expect(calls.filter(call => call === "plus-enter")).toHaveLength(2);
+  expect(calls).toContain("escape");
+  expect(calls.at(-2)).toBe("more-focus");
+  expect(calls.at(-1)).toBe("more-enter");
 });
 
 test("repeated connector verification reuses its selected pill before clearing the composer", async () => {

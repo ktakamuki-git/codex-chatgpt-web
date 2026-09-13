@@ -3051,23 +3051,34 @@ export class ChatGptBrowserWorker {
       name: CHATGPT_CONNECTOR_PICKER_BUTTON_LABEL,
       exact: true,
     });
-    await addMore.waitFor({
-      state: "visible",
-      timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      signal: abortSignal,
-    });
-    await addMore.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-    await addMore.press("Enter", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-
     const more = page.getByRole("menuitem", {
       name: CHATGPT_CONNECTOR_PICKER_MORE_LABEL,
       exact: true,
-    });
-    await more.waitFor({
-      state: "visible",
-      timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      signal: abortSignal,
-    });
+    }).filter({ visible: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await addMore.waitFor({
+        state: "visible",
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+        signal: abortSignal,
+      });
+      await addMore.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+      await addMore.press("Enter", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+      try {
+        await more.waitFor({
+          state: "visible",
+          timeout: 2_500,
+          signal: abortSignal,
+        });
+        break;
+      } catch (error) {
+        if (!(error instanceof Error) || error.name !== "TimeoutError" || attempt === 1) throw error;
+        await page.locator("body").press("Escape", {
+          signal: abortSignal,
+          timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+        });
+        await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
+      }
+    }
     await more.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
     await more.press("Enter", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
 

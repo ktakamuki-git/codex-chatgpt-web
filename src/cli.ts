@@ -22,6 +22,7 @@ import {
 } from "./codex-integration";
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
+import { runChatGptMcpHttpMain } from "./adapters/chatgpt-web/mcp-http-main";
 import { runCommand } from "./process";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
@@ -50,6 +51,7 @@ Usage:
   codex-chatgpt-web dev list
   codex-chatgpt-web serve
   codex-chatgpt-web mcp [--broker-socket PATH]
+  codex-chatgpt-web mcp-http [--host HOST] [--port NUMBER] [--broker-socket PATH] [--contract native|safe]
   codex-chatgpt-web service <status|install|start|restart|stop|cancel-turns>
   codex-chatgpt-web tunnel <status|start|restart|stop|key-import>
   codex-chatgpt-web open <tunnels|runtime-keys|connectors>
@@ -89,6 +91,12 @@ Setup options:
   --inline-skills             Keep selected skills inline (default)
   --standard-context           Disable experimental multi-message context
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
+
+MCP HTTP options:
+  --host HOST                  Bind host (default: 127.0.0.1; private tailnet addresses are allowed)
+  --port NUMBER                Port (default: 17843)
+  --broker-socket PATH         Local Codex turn broker endpoint
+  --contract native|safe       Use the Native2 or Zero Risk tool contract (default: native)
 
 Global:
   --home PATH                  Override ~/.codex-chatgpt-web
@@ -655,6 +663,7 @@ async function main(): Promise<void> {
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);
+  else if (command === "mcp-http") await runChatGptMcpHttpMain(args);
   else if (command === "service") await serviceCommand(args);
   else if (command === "hook") {
     const action = args.shift();

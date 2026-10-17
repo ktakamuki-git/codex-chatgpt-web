@@ -447,10 +447,13 @@ function execCommandGatewayProgram(
   ]);
 }
 
-export async function runChatGptMcpServer(options: {
+export interface ChatGptMcpServerOptions {
   brokerSocketPath: string;
   contract?: ChatGptMcpContract;
-}): Promise<void> {
+}
+
+/** Build the shared tool registry for stdio and Streamable HTTP transports. */
+export function createChatGptMcpServer(options: ChatGptMcpServerOptions): McpServer {
   const contract = options.contract ?? "native";
   const server = new McpServer(
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
@@ -988,5 +991,10 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
+  return server;
+}
+
+export async function runChatGptMcpServer(options: ChatGptMcpServerOptions): Promise<void> {
+  const server = createChatGptMcpServer(options);
   await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
 }

@@ -338,6 +338,8 @@ function tunnelStopProcessExited(output: string, alias: string): boolean {
 }
 
 export interface TunnelRuntimeStatus {
+  transport?: "local" | "external";
+  connectivity?: "verified" | "unverified";
   ok: boolean;
   processRunning: boolean;
   healthy: boolean;
@@ -446,16 +448,38 @@ export function parseTunnelStatus(output: string, alias: string, exitStatus = 0)
 }
 
 export function tunnelStatus(config: AppConfig): TunnelRuntimeStatus {
+  if (config.mode === "full" && config.externalTunnel) {
+    return {
+      transport: "external",
+      connectivity: "unverified",
+      ok: false,
+      processRunning: false,
+      healthy: false,
+      ready: false,
+      state: "external-unverified",
+      detail: "External tunnel connectivity is managed outside this host and was not observed",
+    };
+  }
   const settings = tunnel(config);
   if (!existsSync(settings.binaryPath)) {
-    return { ok: false, processRunning: false, healthy: false, ready: false, detail: `Missing ${settings.binaryPath}` };
+    return {
+      transport: "local",
+      ok: false,
+      processRunning: false,
+      healthy: false,
+      ready: false,
+      detail: `Missing ${settings.binaryPath}`,
+    };
   }
   const result = runCommand(
     settings.binaryPath,
     ["runtimes", "cleanup", "--json"],
     { timeout: 10_000 },
   );
-  return parseTunnelStatus(tunnelCommandOutput(result), settings.alias, result.status);
+  return {
+    ...parseTunnelStatus(tunnelCommandOutput(result), settings.alias, result.status),
+    transport: "local",
+  };
 }
 
 export async function waitForTunnelReady(

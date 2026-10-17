@@ -471,6 +471,9 @@ class RuntimeHost {
     if (interactionMode !== "automatic" && interactionMode !== "manual") {
       throw new Error("Browser interaction mode must be automatic or manual");
     }
+    if (config?.mode === "full" && /^tunnel_[a-f0-9]{32}$/.test(config.externalTunnel?.tunnelId || "")) {
+      return true;
+    }
     const explicitTunnel = interactionMode === "manual"
       ? config?.manualTunnel
       : config?.automaticTunnel;
@@ -1377,6 +1380,9 @@ class RuntimeHost {
       "--restart-service",
     ];
     args.push("--preserve-disconnected-route");
+    if (existing.config?.externalTunnel?.tunnelId) {
+      args.push("--external-tunnel-id", existing.config.externalTunnel.tunnelId);
+    }
     const result = await this.runSetup("runtime-upgrade", args, {
       message: tunnelProfileMigrationRequired
         ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
@@ -1418,9 +1424,13 @@ class RuntimeHost {
     ];
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
+      const externalTunnelId = this.runtimeConfigSnapshot().config?.externalTunnel?.tunnelId;
+      if (externalTunnelId) args.push("--external-tunnel-id", externalTunnelId);
       return this.runSetup("mcp-setup", args, {
         message: "Reconnecting the native Codex harness with saved tunnel credentials",
-        successMessage: "Local MCP tools are ready",
+        successMessage: externalTunnelId
+          ? "Local Responses runtime is ready; external tunnel connectivity was not verified"
+          : "Local MCP tools are ready",
         timeoutMs: MCP_SETUP_TIMEOUT_MS,
         afterRuntimeReady,
       });

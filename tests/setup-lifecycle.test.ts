@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as configModule from "../src/config";
@@ -240,6 +240,71 @@ for (const development of [false, true]) {
     }
   });
 }
+
+test("production Full setup accepts an external tunnel without local tunnel credentials", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-web-external-setup-"));
+  const configPath = join(root, "config.json");
+  const keyPath = join(root, "secrets", "tunnel-runtime-automatic.key");
+  let saved: configModule.AppConfig | undefined;
+  const mocks = [
+    spyOn(configModule, "getConfigPath").mockReturnValue(configPath),
+    spyOn(configModule, "saveConfig").mockImplementation(value => { saved = value; }),
+    spyOn(integration, "preflightCodexIntegration").mockImplementation(() => {}),
+    spyOn(integration, "installCodexIntegration").mockImplementation(() => ({} as never)),
+    spyOn(service, "getServiceStatus").mockReturnValue({ installed: false, loaded: false } as never),
+    spyOn(service, "removeLegacyRuntimeArtifacts").mockImplementation(() => {}),
+    spyOn(tunnelService, "getTunnelServiceStatus").mockReturnValue({ installed: false, loaded: false } as never),
+    spyOn(tunnel, "managedRuntimeKeyPath").mockReturnValue(keyPath),
+    spyOn(tunnel, "installTunnelClient").mockResolvedValue(join(root, "bin", "tunnel-client")),
+    spyOn(tunnel, "connectTunnel").mockImplementation(() => { throw new Error("external setup launched a local tunnel"); }),
+    spyOn(tunnel, "installRuntimeKey").mockImplementation(() => { throw new Error("external setup imported a local key"); }),
+    spyOn(tunnel, "installRuntimeKeyBytes").mockImplementation(() => { throw new Error("external setup wrote a local key"); }),
+    spyOn(browserHost, "inspectLauncherBrowserHost").mockResolvedValue({
+      solAvailable: true, extraHighAvailable: true, proAvailable: true,
+    } as never),
+  ];
+  const listener = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const port = listener.port!;
+  await listener.stop(true);
+  try {
+    const result = await setup({
+      mode: "full",
+      subagentProtocol: "native",
+      browserHostDescriptorPath: join(root, "launcher-browser.json"),
+      externalTunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      acknowledgedUnofficial: true,
+      port,
+    });
+
+    expect(result).toMatchObject({
+      mode: "full",
+      tunnelReady: null,
+      tunnelTransport: "external",
+      externalTunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      connectorSetupRequired: true,
+    });
+    expect(saved).toMatchObject({
+      mode: "full",
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher-browser.json"),
+      subagentProtocol: "native",
+      externalTunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
+    });
+    expect(saved?.tunnel).toBeUndefined();
+    expect(saved?.automaticTunnel).toBeUndefined();
+    expect(saved?.manualTunnel).toBeUndefined();
+    expect(configModule.providerConfig(saved!).chatgptWeb?.localToolsEnabled).toBe(true);
+    expect(saved?.brokerSocketPath).toBeTruthy();
+    expect(tunnel.installTunnelClient).not.toHaveBeenCalled();
+    expect(tunnel.connectTunnel).not.toHaveBeenCalled();
+    expect(tunnel.installRuntimeKey).not.toHaveBeenCalled();
+    expect(tunnel.installRuntimeKeyBytes).not.toHaveBeenCalled();
+    expect(existsSync(keyPath)).toBe(false);
+  } finally {
+    for (const mock of mocks.reverse()) mock.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test.skipIf(process.platform !== "darwin")("external service setup retains validation cleanup on success and failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-web-external-setup-"));

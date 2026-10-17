@@ -22,6 +22,7 @@ import {
 } from "../src/config";
 import { removeLegacyRuntimeArtifacts } from "../src/service";
 import { processRunning } from "../src/process";
+import { formatDoctorReport } from "../src/doctor";
 import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
@@ -100,6 +101,43 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
+});
+
+test("Full external-tunnel configuration loads without local tunnel credentials", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-external-tunnel-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = defaultConfig("full");
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = join(root, "launcher-browser.json");
+  config.subagentProtocol = "native";
+  config.runtimeCommand = [process.execPath];
+  config.externalTunnel = { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" };
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(config)}\n`);
+
+  expect(loadConfig()).toMatchObject({
+    mode: "full",
+    browserHost: "launcher",
+    subagentProtocol: "native",
+    externalTunnel: config.externalTunnel,
+  });
+  expect(existsSync(join(root, "secrets", "tunnel-runtime-automatic.key"))).toBe(false);
+  expect(existsSync(join(root, "bin", "tunnel-client"))).toBe(false);
+});
+
+test("doctor does not label an unverified external tunnel as ready", () => {
+  const report = formatDoctorReport({
+    ok: true,
+    mode: "full",
+    checks: [{
+      id: "external-tunnel",
+      status: "warning",
+      message: "External tunnel connectivity was not verified",
+    }],
+  });
+  expect(report).toContain("Doctor result: local checks passed; external tunnel connectivity is unverified");
+  expect(report).not.toContain("Doctor result: ready");
 });
 
 test.each([

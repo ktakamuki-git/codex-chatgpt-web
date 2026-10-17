@@ -66,6 +66,7 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  externalTunnelId?: string;
 }
 
 export interface SetupResult {
@@ -74,6 +75,8 @@ export interface SetupResult {
   loginCreated: boolean;
   serviceLoaded: boolean;
   tunnelReady: boolean | null;
+  tunnelTransport: "local" | "external" | null;
+  externalTunnelId?: string;
   codexRestartRequired: true;
   connectorSetupRequired: boolean;
 }
@@ -114,6 +117,9 @@ export function existingFullSetupCredentials(
   existing: AppConfig | undefined,
   interactionMode: BrowserInteractionMode = existing?.browserInteractionMode ?? "automatic",
 ): ExistingFullSetupCredentials {
+  if (existing?.mode === "full" && existing.externalTunnel) {
+    return { tunnelId: false, runtimeKey: false };
+  }
   const tunnel = existing?.mode === "full"
     ? tunnelConfigForInteractionMode(existing, interactionMode)
     : undefined;
@@ -161,6 +167,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     tunnel: before.tunnel,
     automaticTunnel: before.automaticTunnel,
     manualTunnel: before.manualTunnel,
+    externalTunnel: before.externalTunnel,
   }) !== JSON.stringify({
     mode: after.mode,
     subagentProtocol: after.subagentProtocol,
@@ -193,6 +200,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     tunnel: after.tunnel,
     automaticTunnel: after.automaticTunnel,
     manualTunnel: after.manualTunnel,
+    externalTunnel: after.externalTunnel,
   });
 }
 
@@ -202,7 +210,8 @@ export function tunnelWorkerRuntimeChanged(before: AppConfig | undefined, after:
     || JSON.stringify(before.runtimeCommand) !== JSON.stringify(after.runtimeCommand)
     || before.brokerSocketPath !== after.brokerSocketPath
     || before.browserInteractionMode !== after.browserInteractionMode
-    || JSON.stringify(before.tunnel) !== JSON.stringify(after.tunnel);
+    || JSON.stringify(before.tunnel) !== JSON.stringify(after.tunnel)
+    || JSON.stringify(before.externalTunnel) !== JSON.stringify(after.externalTunnel);
 }
 
 /**
@@ -386,8 +395,26 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     delete config.tunnel;
     delete config.automaticTunnel;
     delete config.manualTunnel;
+    delete config.externalTunnel;
     return;
   }
+  const explicitLocalTunnel = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
+  const externalTunnelId = options.externalTunnelId
+    ?? (!explicitLocalTunnel ? existing?.externalTunnel?.tunnelId : undefined);
+  if (externalTunnelId !== undefined) {
+    if (!/^tunnel_[a-f0-9]{32}$/.test(externalTunnelId)) {
+      throw new Error("--external-tunnel-id must be tunnel_ followed by 32 lowercase hexadecimal characters");
+    }
+    if (options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue) {
+      throw new Error("--external-tunnel-id cannot be combined with locally managed tunnel credentials");
+    }
+    config.externalTunnel = { tunnelId: externalTunnelId };
+    delete config.tunnel;
+    delete config.automaticTunnel;
+    delete config.manualTunnel;
+    return;
+  }
+  delete config.externalTunnel;
   const interactionMode = config.browserInteractionMode;
   const legacyTunnel = existing?.mode === "full"
     && !existing.automaticTunnel
@@ -490,7 +517,29 @@ function prepareSetup(options: SetupOptions): PreparedSetup {
 
 export function preflightSetup(options: SetupOptions): void {
   const { existing, config } = prepareSetup(options);
+  if (options.externalTunnelId && config.mode !== "full") {
+    throw new Error("--external-tunnel-id requires --full");
+  }
   if (config.mode === "full") {
+    if (options.externalTunnelId !== undefined) {
+      if (!/^tunnel_[a-f0-9]{32}$/.test(options.externalTunnelId)) {
+        throw new Error("--external-tunnel-id must be tunnel_ followed by 32 lowercase hexadecimal characters");
+      }
+      if (options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue) {
+        throw new Error("--external-tunnel-id cannot be combined with locally managed tunnel credentials");
+      }
+      preflightCodexIntegration(config, {
+        replaceExistingRoute: options.replaceCodexRoute,
+      });
+      return;
+    }
+    if (existing?.mode === "full" && existing.externalTunnel
+      && !options.tunnelId && !options.runtimeKeyFile && !options.runtimeKeyValue) {
+      preflightCodexIntegration(config, {
+        replaceExistingRoute: options.replaceCodexRoute,
+      });
+      return;
+    }
     const saved = existing?.mode === "full"
       ? tunnelConfigForInteractionMode(existing, config.browserInteractionMode)
       : undefined;
@@ -602,7 +651,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   config.solAvailable = solAvailable === true;
   config.extraHighAvailable = config.solAvailable && extraHighAvailable === true;
   config.proAvailable = config.solAvailable && proAvailable === true;
-  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
+  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue || options.externalTunnelId);
   const preliminaryChange = Boolean(existing && (meaningfulRuntimeChange(existing, config) || explicitTunnelChange || options.forceLogin));
   if (beforeService.loaded && preliminaryChange && !options.restartService) {
     throw new Error(
@@ -634,30 +683,37 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   if (config.mode === "browser-only" && existing?.mode === "full") {
     const previousTunnelService = getTunnelServiceStatus();
     if (previousTunnelService.installed || previousTunnelService.loaded) await uninstallTunnelService();
-    stopTunnel(existing);
+    if (existing.tunnel) stopTunnel(existing);
   }
   if (config.mode === "full") {
-    const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
     const tunnelService = getTunnelServiceStatus();
-    const needsProfile = !existsSync(profilePath);
-    if (launcherOwned) {
+    if (config.externalTunnel) {
       if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
-      // Commit the inputs before acquiring a runtime. The launcher supervisor creates the
-      // profile, proves readiness/MCP health, and cleans up failed startup under one owner.
+      if (!launcherOwned && existing?.mode === "full" && existing.tunnel) stopTunnel(existing);
+      // The external owner holds the tunnel client and runtime API credential. This host only
+      // starts the Full Responses and Turn Broker runtime and cannot observe remote connectivity.
     } else {
-      const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
-      if (needsOwnershipMigration || needsProfile) {
-        await assertServiceIdle(config);
-        if (tunnelService.loaded) await stopTunnelService();
-        await bootstrapTunnelProfile(config);
-        installTunnelService(config);
-      } else if (refreshTunnelWorker) {
-        await assertServiceIdle(config);
-        await restartTunnelService();
+      const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
+      const needsProfile = !existsSync(profilePath);
+      if (launcherOwned) {
+        if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
+        // Commit the inputs before acquiring a runtime. The launcher supervisor creates the
+        // profile, proves readiness/MCP health, and cleans up failed startup under one owner.
+      } else {
+        const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
+        if (needsOwnershipMigration || needsProfile) {
+          await assertServiceIdle(config);
+          if (tunnelService.loaded) await stopTunnelService();
+          await bootstrapTunnelProfile(config);
+          installTunnelService(config);
+        } else if (refreshTunnelWorker) {
+          await assertServiceIdle(config);
+          await restartTunnelService();
+        }
+        const status = await waitForTunnelReady(config);
+        if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
+        tunnelReady = true;
       }
-      const status = await waitForTunnelReady(config);
-      if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
-      tunnelReady = true;
     }
   }
   if (launcherOwned && (beforeService.installed || beforeService.loaded)) {
@@ -681,6 +737,8 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     loginCreated,
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
     tunnelReady,
+    tunnelTransport: config.mode === "full" ? config.externalTunnel ? "external" : "local" : null,
+    ...(config.externalTunnel ? { externalTunnelId: config.externalTunnel.tunnelId } : {}),
     codexRestartRequired: true,
     connectorSetupRequired: config.mode === "full",
   };
@@ -692,6 +750,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
  * launcher supervises only the isolated MCP tunnel after this transaction commits.
  */
 export async function setupDevProfile(options: SetupOptions): Promise<DevProfileSetupResult> {
+  if (options.externalTunnelId) {
+    throw new Error("DEV profile setup does not support externally managed tunnels");
+  }
   const existing = loadExistingConfig();
   if (existing && existing.purpose !== DEV_CONFIG_PURPOSE) {
     throw new Error("DEV profile home contains a non-DEV configuration; refusing to repurpose it");

@@ -95,6 +95,10 @@ export interface TunnelConfig {
   alias: string;
 }
 
+export interface ExternalTunnelConfig {
+  tunnelId: string;
+}
+
 export interface AppConfig {
   version: 3;
   purpose?: "dev-harness";
@@ -133,6 +137,8 @@ export interface AppConfig {
   tunnel?: TunnelConfig;
   automaticTunnel?: TunnelConfig;
   manualTunnel?: TunnelConfig;
+  /** Tunnel connectivity is owned by an operator outside this runtime. */
+  externalTunnel?: ExternalTunnelConfig;
 }
 
 export function tunnelConfigForInteractionMode(
@@ -417,6 +423,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  if (parsed.externalTunnel !== undefined && parsed.mode !== "full") {
+    throw new Error(`externalTunnel requires full mode in ${path}`);
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -504,19 +513,29 @@ function parseConfig(value: unknown, path: string): AppConfig {
     }
   };
   if (parsed.mode === "full") {
-    validateTunnel(parsed.tunnel, "tunnel");
-    if (parsed.automaticTunnel !== undefined) validateTunnel(parsed.automaticTunnel, "automaticTunnel");
-    if (parsed.manualTunnel !== undefined) validateTunnel(parsed.manualTunnel, "manualTunnel");
-    if (parsed.automaticTunnel && parsed.manualTunnel
-      && parsed.automaticTunnel.tunnelId === parsed.manualTunnel.tunnelId) {
-      throw new Error(`Automatic and Zero Risk must use different Tunnel IDs in ${path}`);
-    }
-    const activeTunnel = browserInteractionMode === "manual" ? parsed.manualTunnel : parsed.automaticTunnel;
-    if ((parsed.automaticTunnel || parsed.manualTunnel) && !activeTunnel) {
-      throw new Error(`Active browser interaction mode has no tunnel configuration in ${path}`);
-    }
-    if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
-      throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
+    if (parsed.externalTunnel !== undefined) {
+      if (typeof parsed.externalTunnel !== "object" || parsed.externalTunnel === null
+        || !/^tunnel_[a-f0-9]{32}$/.test(parsed.externalTunnel.tunnelId)) {
+        throw new Error(`Invalid externalTunnel.tunnelId in ${path}`);
+      }
+      if (parsed.tunnel || parsed.automaticTunnel || parsed.manualTunnel) {
+        throw new Error(`External and locally managed tunnels cannot be configured together in ${path}`);
+      }
+    } else {
+      validateTunnel(parsed.tunnel, "tunnel");
+      if (parsed.automaticTunnel !== undefined) validateTunnel(parsed.automaticTunnel, "automaticTunnel");
+      if (parsed.manualTunnel !== undefined) validateTunnel(parsed.manualTunnel, "manualTunnel");
+      if (parsed.automaticTunnel && parsed.manualTunnel
+        && parsed.automaticTunnel.tunnelId === parsed.manualTunnel.tunnelId) {
+        throw new Error(`Automatic and Zero Risk must use different Tunnel IDs in ${path}`);
+      }
+      const activeTunnel = browserInteractionMode === "manual" ? parsed.manualTunnel : parsed.automaticTunnel;
+      if ((parsed.automaticTunnel || parsed.manualTunnel) && !activeTunnel) {
+        throw new Error(`Active browser interaction mode has no tunnel configuration in ${path}`);
+      }
+      if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
+        throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
+      }
     }
   }
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0

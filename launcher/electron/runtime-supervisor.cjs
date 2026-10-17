@@ -303,22 +303,37 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     }
   };
   if (config.mode === "full") {
-    validateTunnel(config.tunnel, "tunnel");
-    if (config.automaticTunnel !== undefined) validateTunnel(config.automaticTunnel, "automaticTunnel");
-    if (config.manualTunnel !== undefined) validateTunnel(config.manualTunnel, "manualTunnel");
-    if (config.automaticTunnel && config.manualTunnel
-      && config.automaticTunnel.tunnelId === config.manualTunnel.tunnelId) {
-      throw new Error("Automatic and Zero Risk tunnel IDs must differ");
+    if (config.externalTunnel !== undefined) {
+      if (!config.externalTunnel || typeof config.externalTunnel !== "object"
+        || !/^tunnel_[a-f0-9]{32}$/.test(config.externalTunnel.tunnelId)) {
+        throw new Error("Runtime configuration has an invalid external tunnel id");
+      }
+      if (config.tunnel || config.automaticTunnel || config.manualTunnel) {
+        throw new Error("External and locally managed tunnels cannot be configured together");
+      }
+      if (launcherProfile === "development") {
+        throw new Error("DEV launcher does not support externally managed tunnels");
+      }
+    } else {
+      validateTunnel(config.tunnel, "tunnel");
+      if (config.automaticTunnel !== undefined) validateTunnel(config.automaticTunnel, "automaticTunnel");
+      if (config.manualTunnel !== undefined) validateTunnel(config.manualTunnel, "manualTunnel");
+      if (config.automaticTunnel && config.manualTunnel
+        && config.automaticTunnel.tunnelId === config.manualTunnel.tunnelId) {
+        throw new Error("Automatic and Zero Risk tunnel IDs must differ");
+      }
+      const activeTunnel = config.browserInteractionMode === "manual"
+        ? config.manualTunnel
+        : config.automaticTunnel;
+      if ((config.automaticTunnel || config.manualTunnel) && !activeTunnel) {
+        throw new Error("Active browser interaction mode has no tunnel configuration");
+      }
+      if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(config.tunnel)) {
+        throw new Error("Active browser interaction mode does not match the active tunnel");
+      }
     }
-    const activeTunnel = config.browserInteractionMode === "manual"
-      ? config.manualTunnel
-      : config.automaticTunnel;
-    if ((config.automaticTunnel || config.manualTunnel) && !activeTunnel) {
-      throw new Error("Active browser interaction mode has no tunnel configuration");
-    }
-    if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(config.tunnel)) {
-      throw new Error("Active browser interaction mode does not match the active tunnel");
-    }
+  } else if (config.externalTunnel !== undefined) {
+    throw new Error("Browser-only mode cannot configure an external tunnel");
   }
   return config;
 }
@@ -357,6 +372,7 @@ class RuntimeSupervisor {
     this.statePath = path.join(coreHome, "runtime", "launcher-supervisor.json");
     this.daemon = null;
     this.tunnel = null;
+    this.currentConfig = null;
     this.stopping = false;
     this.startPromise = null;
     this.stopPromise = null;
@@ -430,11 +446,19 @@ class RuntimeSupervisor {
   }
 
   snapshot(status = "idle", detail) {
+    const tunnelOwner = this.currentConfig?.externalTunnel
+      ? "external"
+      : this.currentConfig?.mode === "full" ? "launcher" : "none";
+    const tunnelConnectivity = tunnelOwner === "external"
+      ? "unverified"
+      : tunnelOwner === "launcher" ? (this.tunnel ? "ready" : "starting") : "not-applicable";
     return {
       version: 1,
       ownerPid: process.pid,
       daemonPid: this.daemon?.pid ?? null,
       tunnelPid: this.tunnel?.pid ?? null,
+      tunnelOwner,
+      tunnelConnectivity,
       status,
       ...(detail ? { detail } : {}),
       updatedAt: new Date().toISOString(),
@@ -989,7 +1013,7 @@ class RuntimeSupervisor {
   }
 
   async startTunnel(config, operationName = "runtime-start", { forceRestart = false } = {}) {
-    if (config.mode !== "full") return;
+    if (config.mode !== "full" || config.externalTunnel) return;
     this.assertTunnelClientReady(config);
     // Every acquisition binds diagnostics to this runtime, including adoption of an existing alias.
     this.tunnelHealthBaseUrl = null;
@@ -1202,6 +1226,7 @@ class RuntimeSupervisor {
       return { status: "needs-setup", detail };
     }
     if (!config) {
+      this.currentConfig = null;
       const ownershipState = this.readState();
       if (ownershipState && !runtimeOwnershipPredatesCurrentBoot(ownershipState) && (
         processRunning(ownershipState.daemonPid)
@@ -1214,6 +1239,7 @@ class RuntimeSupervisor {
       this.clearState();
       return { status: "not-configured" };
     }
+    this.currentConfig = config;
     const tunnelOnly = this.launcherProfile === "development";
     if (tunnelOnly && config.mode !== "full") {
       const ownershipState = this.readState();
@@ -1286,9 +1312,17 @@ class RuntimeSupervisor {
       this.publishOperation?.({
         name: "runtime-start",
         status: "completed",
-        message: tunnelOnly ? "Isolated DEV MCP runtime is ready" : "Local runtime is ready",
+        message: config.externalTunnel
+          ? "Local Responses runtime is ready; external tunnel connectivity is unverified"
+          : tunnelOnly ? "Isolated DEV MCP runtime is ready" : "Local runtime is ready",
       });
-      return { status: "ready", daemonPid: this.daemon?.pid, tunnelPid: this.tunnel?.pid };
+      return {
+        status: "ready",
+        daemonPid: this.daemon?.pid,
+        tunnelPid: this.tunnel?.pid,
+        tunnelOwner: config.externalTunnel ? "external" : config.mode === "full" ? "launcher" : "none",
+        tunnelConnectivity: config.externalTunnel ? "unverified" : config.mode === "full" ? "ready" : "not-applicable",
+      };
     } catch (error) {
       this.stopping = true;
       let cleanupError;
@@ -1354,11 +1388,11 @@ class RuntimeSupervisor {
     else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);
     if (!tunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
-    if (config.mode === "full" && !this.tunnel) {
+    if (config.mode === "full" && !config.externalTunnel && !this.tunnel) {
       throw new Error("Tunnel runtime is unavailable after runtime recovery");
     }
     if (!tunnelOnly) await this.waitForProxy(config);
-    if (config.mode === "full") {
+    if (config.mode === "full" && !config.externalTunnel) {
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
     }
     if (!this.tryWriteState("ready")) {
@@ -1444,6 +1478,7 @@ class RuntimeSupervisor {
       return false;
     }
     if (config.mode !== "full") return true;
+    if (config.externalTunnel) return true;
     return Boolean(this.tunnel && await this.tunnelHealth(config));
   }
 
@@ -1750,7 +1785,7 @@ class RuntimeSupervisor {
       );
     }
     let managedTunnelRunning = false;
-    if (config.mode === "full") {
+    if (config.mode === "full" && !config.externalTunnel) {
       const tunnelHealth = await this.waitForKnownTunnelStatus(config);
       managedTunnelRunning = !tunnelRuntimeStopped(tunnelHealth);
       if (managedTunnelRunning
@@ -1767,8 +1802,8 @@ class RuntimeSupervisor {
       }
     } else if (processRunning(state.tunnelPid)) {
       throw new Error(
-        `The stale tunnel PID ${state.tunnelPid} is still alive but browser-only configuration`
-        + " has no tunnel identity with which to verify it",
+        `The stale tunnel PID ${state.tunnelPid} is still alive but the current configuration`
+        + " has no locally managed tunnel identity with which to verify it",
       );
     }
     if (!daemonRunning && !managedTunnelRunning) {
@@ -1975,6 +2010,7 @@ class RuntimeSupervisor {
         : false;
       const runtimeMayBeLive = healthyRuntime || runtimeOwnershipMayBeLive(ownershipState);
       if (config?.mode === "full"
+        && !config.externalTunnel
         && !this.tunnel
         && (runtimeMayBeLive || !ownershipState)) {
         await this.adoptConfiguredTunnelForStop(config);
@@ -2019,7 +2055,7 @@ class RuntimeSupervisor {
       return { status: "stopped" };
     } catch (error) {
       const compensationErrors = [];
-      if (tunnelStopped && config?.mode === "full" && !this.tunnel) {
+      if (tunnelStopped && config?.mode === "full" && !config.externalTunnel && !this.tunnel) {
         try {
           await this.startTunnel(config);
         } catch (caught) {

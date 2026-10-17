@@ -37,7 +37,7 @@ Focused ChatGPT web-backed models for the native Codex harness.
 
 Usage:
   codex-chatgpt-web setup --browser-only [options]
-  codex-chatgpt-web setup --full --tunnel-id ID --runtime-key-file PATH [options]
+  codex-chatgpt-web setup --full (--tunnel-id ID --runtime-key-file PATH | --external-tunnel-id ID) [options]
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
@@ -71,6 +71,7 @@ Setup options:
   --refresh-account-capabilities
                                Re-read the authenticated account's available Web models
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
+  --external-tunnel-id ID      Full mode tunnel owned by an external runtime; no local key or client
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
   --replace-codex-route        Reversibly replace existing Responses or Voice route settings
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
@@ -300,6 +301,7 @@ async function setupCommand(args: string[]): Promise<void> {
     options.subagentProtocol = subagentProtocol;
   }
   const tunnelId = takeOption(args, "--tunnel-id");
+  const externalTunnelId = takeOption(args, "--external-tunnel-id");
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
   const chrome = takeOption(args, "--chrome");
   const browserHostDescriptorPath = takeOption(args, "--browser-host-descriptor");
@@ -307,7 +309,14 @@ async function setupCommand(args: string[]): Promise<void> {
   if (browserHostDescriptorPath) options.browserHostDescriptorPath = browserHostDescriptorPath;
   options.refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
   if (tunnelId) options.tunnelId = tunnelId;
+  if (externalTunnelId) options.externalTunnelId = externalTunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
+  if (options.externalTunnelId && options.mode !== "full") {
+    throw new Error("--external-tunnel-id requires --full");
+  }
+  if (options.externalTunnelId && (options.tunnelId || options.runtimeKeyFile)) {
+    throw new Error("--external-tunnel-id cannot be combined with locally managed tunnel credentials");
+  }
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
   const predictions = takeFlag(args, "--composer-predictions");
@@ -364,12 +373,16 @@ async function setupCommand(args: string[]): Promise<void> {
   const existing = existsSync(getConfigPath()) ? loadConfigForSetup() : undefined;
   const interactionMode = options.browserInteractionMode ?? existing?.browserInteractionMode ?? "automatic";
   const reusableCredentials = existingFullSetupCredentials(existing, interactionMode);
-  const needsTunnelId = !options.tunnelId && !reusableCredentials.tunnelId;
+  const externalTunnelSelected = Boolean(options.externalTunnelId || (
+    existing?.externalTunnel && !options.tunnelId && !options.runtimeKeyFile
+  ));
+  const needsTunnelId = !externalTunnelSelected && !options.tunnelId && !reusableCredentials.tunnelId;
   const needsRuntimeKey = !options.runtimeKeyFile
+    && !externalTunnelSelected
     && !reusableCredentials.runtimeKey
     && !existsSync(managedRuntimeKeyPath(interactionMode));
 
-  if (full && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
+  if (full && !externalTunnelSelected && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
     stdout.write("Full mode needs an OpenAI tunnel and a runtime key with Tunnels Read + Use.\n");
     stdout.write("Tunnels: https://platform.openai.com/settings/organization/tunnels\n");
     stdout.write("Runtime keys: https://platform.openai.com/settings/organization/api-keys\n");
@@ -382,6 +395,11 @@ async function setupCommand(args: string[]): Promise<void> {
   const result = await setup(options);
   stdout.write(`Setup complete: ${result.mode}\n`);
   stdout.write(`Config: ${result.configPath}\n`);
+  if (result.tunnelTransport === "external") {
+    stdout.write(
+      `External tunnel ${result.externalTunnelId} is configured; connectivity is managed off-device and was not verified here.\n`,
+    );
+  }
   if (result.connectorSetupRequired) {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
     stdout.write("Open: https://chatgpt.com/#settings/Plugins\n");
@@ -500,6 +518,9 @@ async function tunnelCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
   if (action === "key-import") {
+    if (existsSync(getConfigPath()) && loadConfig().externalTunnel) {
+      throw new Error("Runtime key import is unavailable when tunnel connectivity is managed externally");
+    }
     const key = await secretPrompt("Runtime key (hidden): ");
     if (!key) throw new Error("A non-empty runtime key is required");
     installRuntimeKeyBytes(key);
@@ -507,6 +528,19 @@ async function tunnelCommand(args: string[]): Promise<void> {
     return;
   }
   const config = loadConfig();
+  if (config.externalTunnel) {
+    if (action !== "status") {
+      throw new Error("Tunnel lifecycle actions are managed outside this host when --external-tunnel-id is configured");
+    }
+    stdout.write(`${JSON.stringify({
+      owner: "external",
+      configured: true,
+      tunnelId: config.externalTunnel.tunnelId,
+      connectivity: "unverified",
+      runtime: tunnelStatus(config),
+    }, null, 2)}\n`);
+    return;
+  }
   if (action === "start") startTunnelService();
   else if (action === "restart") {
     await assertServiceIdle(config);

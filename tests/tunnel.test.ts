@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { zipSync } from "fflate";
 import * as config from "../src/config";
 import * as commands from "../src/process";
-import { TUNNEL_VERSION, connectTunnel, createTunnelConfig, installTunnelClient, parseTunnelStatus, stopTunnel, tunnelClientInstallAction, tunnelCommandOutput, tunnelConnectLaunchError } from "../src/tunnel";
+import { TUNNEL_VERSION, connectTunnel, createTunnelConfig, installTunnelClient, parseTunnelStatus, stopTunnel, tunnelClientInstallAction, tunnelCommandOutput, tunnelConnectLaunchError, tunnelStatus } from "../src/tunnel";
 
 test("native connect completes shared MCP initialization without changing the parent environment", () => {
   const root = fs.mkdtempSync(join(tmpdir(), "tunnel-connect-"));
@@ -214,6 +214,22 @@ test("upgrades 0.0.12 with verified assets and restores it if manifest installat
 });
 
 describe("tunnel status boundary", () => {
+  test("external tunnel status is explicit and remains unverified without local evidence", () => {
+    const external = {
+      ...config.defaultConfig("full"),
+      externalTunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
+    };
+    expect(tunnelStatus(external)).toMatchObject({
+      transport: "external",
+      connectivity: "unverified",
+      ok: false,
+      processRunning: false,
+      healthy: false,
+      ready: false,
+      state: "external-unverified",
+    });
+  });
+
   test("requires the exact alias to have a locally verified ready runtime", () => {
     expect(parseTunnelStatus(JSON.stringify({
       entries: [{ alias: "ours", runtime_state: "ready" }],

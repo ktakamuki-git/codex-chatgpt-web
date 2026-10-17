@@ -1944,6 +1944,85 @@ process.once("SIGTERM", () => server.close(() => process.exit(0)));
   }
 });
 
+test("external Full tunnel starts the Responses daemon without launching a local tunnel client", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-external-tunnel-supervisor-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  const configPath = path.join(root, "config.json");
+  const serverPath = path.join(root, "fake-runtime.cjs");
+  const port = await freePort();
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  fs.writeFileSync(descriptorPath, "{}\n");
+  fs.writeFileSync(configPath, `${JSON.stringify(launcherConfig(descriptorPath, {
+    mode: "full",
+    externalTunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
+    port,
+    controlToken: "external-runtime-supervisor-control-token-0123456789",
+  }))}\n`);
+  fs.writeFileSync(serverPath, `
+const fs = require("node:fs");
+const http = require("node:http");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+let draining = false;
+const server = http.createServer((request, response) => {
+  response.setHeader("content-type", "application/json");
+  response.setHeader("connection", "close");
+  if (request.url === "/healthz") {
+    response.end(JSON.stringify({
+      status: "ok", service: "codex-chatgpt-web", mode: config.mode,
+      version: config.releaseVersion, pid: process.pid, accepting_turns: !draining,
+    }));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/admin/drain") draining = true;
+  else if (request.method === "POST" && request.url === "/admin/resume") draining = false;
+  else if (request.method === "POST" && request.url === "/admin/shutdown" && draining) {
+    response.end(JSON.stringify({ status: "ok", accepting_turns: false, active_http_turns: 0, active_browser_turns: 0 }));
+    server.close(() => process.exit(0));
+    return;
+  } else {
+    response.statusCode = 404;
+    response.end("{}");
+    return;
+  }
+  response.end(JSON.stringify({ accepting_turns: !draining, active_http_turns: 0, active_browser_turns: 0 }));
+});
+server.listen(config.port, config.host);
+process.once("SIGTERM", () => server.close(() => process.exit(0)));
+`);
+
+  const invocations = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+    runtimeInvocationFactory: (_options) => {
+      invocations.push(_options.args);
+      return { executable: process.execPath, args: [serverPath, configPath], cwd: root };
+    },
+  });
+
+  try {
+    const started = await supervisor.startIfConfigured();
+    assert.equal(started.status, "ready");
+    assert.equal(started.tunnelPid ?? null, null);
+    assert.equal(started.tunnelOwner, "external");
+    assert.equal(started.tunnelConnectivity, "unverified");
+    assert.deepEqual(invocations, [["serve"]]);
+    const state = JSON.parse(fs.readFileSync(path.join(root, "runtime", "launcher-supervisor.json"), "utf8"));
+    assert.equal(state.tunnelOwner, "external");
+    assert.equal(state.tunnelConnectivity, "unverified");
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).ok, true);
+
+    const stopped = await supervisor.stopForSetup();
+    assert.equal(stopped.status, "stopped");
+  } finally {
+    await supervisor.stopForSetup().catch(() => {});
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher supervisor safely replaces an idle daemon left by a crashed launcher owner", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-stale-owner-"));
   const descriptorPath = path.join(root, "runtime", "launcher-browser.json");

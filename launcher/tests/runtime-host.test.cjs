@@ -571,6 +571,21 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   }
 });
 
+test("MCP setup reuses an external tunnel descriptor without requesting a local runtime key", async () => {
+  const fixture = hostFor({
+    mode: "full",
+    browserHost: "launcher",
+    appName: "Codex Native2",
+    externalTunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
+  });
+  assert.equal(fixture.host.mcpCredentialsConfigured(), true);
+  await fixture.host.setupMcp({ replace: false });
+  assert.equal(fixture.invocation().args.includes("--external-tunnel-id"), true);
+  assert.equal(fixture.invocation().args.includes("tunnel_0123456789abcdef0123456789abcdef"), true);
+  assert.equal(fixture.invocation().args.includes("--runtime-key-file"), false);
+  assert.equal(fixture.invocation().args.includes("--tunnel-id"), false);
+});
+
 test("new MCP setup uses the fixed connector without a CLI name override", async () => {
   const fixture = hostFor(null);
   await fixture.host.setupMcp({

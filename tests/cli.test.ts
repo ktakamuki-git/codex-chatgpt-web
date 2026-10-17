@@ -122,6 +122,55 @@ test("setup validates the port before performing runtime work", async () => {
   }
 });
 
+test("setup parses external tunnel selection and rejects local credential options", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-external-tunnel-"));
+  try {
+    const result = await runCli([
+      "setup",
+      "--full",
+      "--external-tunnel-id",
+      "tunnel_0123456789abcdef0123456789abcdef",
+      "--runtime-key-file",
+      join(root, "should-not-be-read.key"),
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--external-tunnel-id cannot be combined with locally managed tunnel credentials");
+    expect(result.stderr).not.toContain("Unknown");
+    expect(existsSync(join(root, "should-not-be-read.key"))).toBe(false);
+    expect(existsSync(join(root, "app", "config.json"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("external tunnel mode does not import or persist a local runtime key", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-external-key-"));
+  const appHome = join(root, "app");
+  mkdirSync(appHome, { recursive: true });
+  const config = {
+    ...defaultConfig("full"),
+    externalTunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef" },
+  };
+  writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config)}\n`);
+  try {
+    const result = await runCli(["tunnel", "key-import"], {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: appHome,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Runtime key import is unavailable when tunnel connectivity is managed externally");
+    expect(existsSync(join(appHome, "secrets", "tunnel-runtime-automatic.key"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("setup browser-interaction flags are explicit and mutually exclusive", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-interaction-"));
   try {
